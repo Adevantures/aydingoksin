@@ -6,9 +6,9 @@ const {
   AudioPlayerStatus,
   VoiceConnectionStatus,
   getVoiceConnection,
+  entersState,
   StreamType,
 } = require('@discordjs/voice');
-
 require('dotenv').config();
 
 const client = new Client({
@@ -23,9 +23,21 @@ const client = new Client({
 const player = createAudioPlayer();
 
 let queue = [
-  { title: "Doki Doki Literature Club!", url: "https://nu.vgmtreasurechest.com/soundtracks/doki-doki-literature-club-official-soundtrack/izzackus/1-01.%20Doki%20Doki%20Literature%20Club%21.mp3", image: "https://i.imgur.com/YIo0QKZ.jpeg" },
-  { title: "Ohayou Sayori!", url: "https://nu.vgmtreasurechest.com/soundtracks/doki-doki-literature-club-official-soundtrack/fyaipyad/1-02.%20Ohayou%20Sayori%21.mp3", image: "https://i.imgur.com/YIo0QKZ.jpeg" },
-  { title: "Dreams of Love and Literature", url: "https://nu.vgmtreasurechest.com/soundtracks/doki-doki-literature-club-official-soundtrack/sbdpmsbc/1-03.%20Dreams%20of%20Love%20and%20Literature.mp3", image: "https://i.imgur.com/YIo0QKZ.jpeg" },
+  {
+    title: "Doki Doki Literature Club!",
+    url: "https://nu.vgmtreasurechest.com/soundtracks/doki-doki-literature-club-official-soundtrack/izzackus/1-01.%20Doki%20Doki%20Literature%20Club%21.mp3",
+    image: "https://i.imgur.com/YIo0QKZ.jpeg",
+  },
+  {
+    title: "Ohayou Sayori!",
+    url: "https://nu.vgmtreasurechest.com/soundtracks/doki-doki-literature-club-official-soundtrack/fyaipyad/1-02.%20Ohayou%20Sayori%21.mp3",
+    image: "https://i.imgur.com/YIo0QKZ.jpeg",
+  },
+  {
+    title: "Dreams of Love and Literature",
+    url: "https://nu.vgmtreasurechest.com/soundtracks/doki-doki-literature-club-official-soundtrack/sbdpmsbc/1-03.%20Dreams%20of%20Love%20and%20Literature.mp3",
+    image: "https://i.imgur.com/YIo0QKZ.jpeg",
+  },
 ];
 
 let currentSongIndex = 0;
@@ -43,9 +55,24 @@ function connectToVoice(channel) {
 
   connection.subscribe(player);
 
-  connection.on(VoiceConnectionStatus.Disconnected, () => {
-    connection.destroy();
-    connection = null;
+  // Handle voice connection errors without crashing
+  connection.on('error', (error) => {
+    console.error('Voice connection error:', error.message);
+  });
+
+  // Handle disconnection with reconnect attempt
+  connection.on(VoiceConnectionStatus.Disconnected, async () => {
+    try {
+      await Promise.race([
+        entersState(connection, VoiceConnectionStatus.Signalling, 5_000),
+        entersState(connection, VoiceConnectionStatus.Connecting, 5_000),
+      ]);
+      // Reconnected successfully
+    } catch {
+      // Could not reconnect, destroy the connection
+      connection.destroy();
+      connection = null;
+    }
   });
 
   return connection;
@@ -53,24 +80,38 @@ function connectToVoice(channel) {
 
 function playSong(channel) {
   const song = queue[currentSongIndex];
+  console.log('Playing:', song.title);
 
-  console.log("Playing:", song.title);
+  // Connect FIRST, then play once the connection is ready
+  const conn = connectToVoice(channel);
 
-  const resource = createAudioResource(song.url, {
-    inputType: StreamType.Arbitrary,
-  });
+  const startPlaying = () => {
+    const resource = createAudioResource(song.url, {
+      inputType: StreamType.Arbitrary,
+    });
+    player.play(resource);
+  };
 
-  player.play(resource);
-
-  connectToVoice(channel);
+  if (conn.state.status === VoiceConnectionStatus.Ready) {
+    startPlaying();
+  } else {
+    conn.once(VoiceConnectionStatus.Ready, () => {
+      startPlaying();
+    });
+  }
 }
 
+// Auto-advance to next song when current one finishes
 player.on(AudioPlayerStatus.Idle, () => {
   currentSongIndex = (currentSongIndex + 1) % queue.length;
   const guild = client.guilds.cache.first();
   const channel = guild?.members.me?.voice?.channel;
-
   if (channel) playSong(channel);
+});
+
+// Log audio player errors without crashing
+player.on('error', (error) => {
+  console.error('Audio player error:', error.message);
 });
 
 client.on('messageCreate', async (message) => {
@@ -78,7 +119,6 @@ client.on('messageCreate', async (message) => {
 
   const args = message.content.trim().split(/ +/);
   const command = args.shift().toLowerCase();
-
   const voiceChannel = message.member.voice.channel;
 
   if (['!play', '!skip', '!stop'].includes(command) && !voiceChannel) {
@@ -101,24 +141,24 @@ client.on('messageCreate', async (message) => {
     player.stop();
     const conn = getVoiceConnection(message.guild.id);
     if (conn) conn.destroy();
+    connection = null;
     message.channel.send('⏹️ Durduruldu');
   }
 
   if (command === '!queue') {
-    const list = queue.map((s, i) =>
-      i === currentSongIndex ? `▶ ${s.title}` : `${i + 1}. ${s.title}`
-    ).join('\n');
-
+    const list = queue
+      .map((s, i) => (i === currentSongIndex ? `▶ ${s.title}` : `${i + 1}. ${s.title}`))
+      .join('\n');
     const embed = new EmbedBuilder()
       .setTitle('🎶 Queue')
       .setDescription(list)
       .setColor('#CCEBFF');
-
     message.channel.send({ embeds: [embed] });
   }
 });
 
-client.once('ready', () => {
+// Use clientReady instead of the deprecated ready event
+client.once('clientReady', () => {
   console.log(`Bot ready: ${client.user.tag}`);
 });
 
