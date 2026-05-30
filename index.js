@@ -43,10 +43,20 @@ let queue = [
 let currentSongIndex = 0;
 let connection = null;
 
-function connectToVoice(channel) {
+// Returns a promise that resolves once the connection is ready
+async function getOrCreateConnection(channel) {
   const existing = getVoiceConnection(channel.guild.id);
+
   if (existing) {
-    console.log(`[VOICE] Reusing existing connection in guild ${channel.guild.id}`);
+    console.log(`[VOICE] Reusing existing connection — status: ${existing.state.status}`);
+    // If it's already ready, return it immediately
+    if (existing.state.status === VoiceConnectionStatus.Ready) {
+      return existing;
+    }
+    // Otherwise wait for it to become ready
+    console.log(`[VOICE] Waiting for existing connection to become Ready...`);
+    await entersState(existing, VoiceConnectionStatus.Ready, 10_000);
+    console.log(`[VOICE] Existing connection is now Ready`);
     return existing;
   }
 
@@ -84,37 +94,34 @@ function connectToVoice(channel) {
     }
   });
 
+  // Wait until fully ready before returning
+  console.log(`[VOICE] Waiting for connection to become Ready...`);
+  await entersState(connection, VoiceConnectionStatus.Ready, 15_000);
+  console.log(`[VOICE] Connection is Ready`);
+
   return connection;
 }
 
-function playSong(channel) {
+async function playSong(channel) {
   const song = queue[currentSongIndex];
   console.log(`[PLAYER] Attempting to play [${currentSongIndex}]: "${song.title}"`);
   console.log(`[PLAYER] URL: ${song.url}`);
 
-  const conn = connectToVoice(channel);
-  console.log(`[PLAYER] Connection status: ${conn.state.status}`);
-
-  const startPlaying = () => {
-    console.log(`[PLAYER] Creating audio resource...`);
-    const resource = createAudioResource(song.url, {
-      inputType: StreamType.Arbitrary,
-    });
-    console.log(`[PLAYER] Resource created, calling player.play()...`);
-    player.play(resource);
-    console.log(`[PLAYER] player.play() called — player status: ${player.state.status}`);
-  };
-
-  if (conn.state.status === VoiceConnectionStatus.Ready) {
-    console.log(`[PLAYER] Connection already ready, starting immediately`);
-    startPlaying();
-  } else {
-    console.log(`[PLAYER] Connection not ready yet, waiting for Ready event...`);
-    conn.once(VoiceConnectionStatus.Ready, () => {
-      console.log(`[PLAYER] Connection became Ready — starting playback`);
-      startPlaying();
-    });
+  try {
+    await getOrCreateConnection(channel);
+  } catch (err) {
+    console.error(`[PLAYER] Failed to get voice connection: ${err.message}`);
+    return;
   }
+
+  console.log(`[PLAYER] Creating audio resource...`);
+  const resource = createAudioResource(song.url, {
+    inputType: StreamType.Arbitrary,
+  });
+
+  console.log(`[PLAYER] Calling player.play()...`);
+  player.play(resource);
+  console.log(`[PLAYER] player.play() called — player status: ${player.state.status}`);
 }
 
 // Log all player state transitions
@@ -126,30 +133,29 @@ player.on(AudioPlayerStatus.Playing, () => {
   console.log(`[PLAYER] ✅ Now playing: "${queue[currentSongIndex].title}"`);
 });
 
-player.on(AudioPlayerStatus.Idle, () => {
-  console.log(`[PLAYER] Track finished or idle. Advancing to next song...`);
-  currentSongIndex = (currentSongIndex + 1) % queue.length;
-  const guild = client.guilds.cache.first();
-  const channel = guild?.members.me?.voice?.channel;
-  if (channel) {
-    console.log(`[PLAYER] Auto-advancing to [${currentSongIndex}]: "${queue[currentSongIndex].title}"`);
-    playSong(channel);
-  } else {
-    console.warn(`[PLAYER] Bot is not in a voice channel — skipping auto-advance`);
-  }
-});
-
 player.on(AudioPlayerStatus.Buffering, () => {
   console.log(`[PLAYER] Buffering...`);
 });
 
-player.on(AudioPlayerStatus.Paused, () => {
-  console.log(`[PLAYER] Paused`);
+player.on(AudioPlayerStatus.Idle, () => {
+  console.log(`[PLAYER] Track finished. Advancing to next song...`);
+  currentSongIndex = (currentSongIndex + 1) % queue.length;
+
+  // Use the existing connection's channel — no need to re-join
+  const conn = connection ?? getVoiceConnection(client.guilds.cache.first()?.id);
+  const channel = client.guilds.cache.first()?.members?.me?.voice?.channel;
+
+  if (!channel) {
+    console.warn(`[PLAYER] Bot is not in a voice channel — cannot auto-advance`);
+    return;
+  }
+
+  console.log(`[PLAYER] Auto-advancing to [${currentSongIndex}]: "${queue[currentSongIndex].title}"`);
+  playSong(channel);
 });
 
 player.on('error', (error) => {
   console.error(`[PLAYER ERROR] ${error.message}`);
-  console.error(`[PLAYER ERROR] Resource URL: ${error.resource?.metadata?.url ?? 'unknown'}`);
 });
 
 client.on('messageCreate', async (message) => {
@@ -167,9 +173,9 @@ client.on('messageCreate', async (message) => {
   }
 
   if (command === '!play') {
-    console.log(`[CMD] !play — resetting to index 0`);
+    console.log(`[CMD] !play — starting from index 0`);
     currentSongIndex = 0;
-    playSong(voiceChannel);
+    await playSong(voiceChannel);
     message.channel.send(`🎵 Çalıyor: **${queue[currentSongIndex].title}**`);
   }
 
@@ -177,7 +183,7 @@ client.on('messageCreate', async (message) => {
     const prevIndex = currentSongIndex;
     currentSongIndex = (currentSongIndex + 1) % queue.length;
     console.log(`[CMD] !skip — ${prevIndex} → ${currentSongIndex}: "${queue[currentSongIndex].title}"`);
-    playSong(voiceChannel);
+    await playSong(voiceChannel);
     message.channel.send(`⏭️ Skip → **${queue[currentSongIndex].title}**`);
   }
 
