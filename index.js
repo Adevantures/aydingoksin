@@ -11,6 +11,13 @@ require('dotenv').config();
 const ffmpegPath = require('ffmpeg-static');
 process.env.FFMPEG_PATH = ffmpegPath;
 
+// Railway crash loop koruması
+process.on('unhandledRejection', (err) => {
+  console.error('Unhandled rejection:', err);
+});
+process.on('uncaughtException', (err) => {
+  console.error('Uncaught exception:', err);
+});
 
 // --------------- BOT & PLAYER -----------------
 const client = new Client({
@@ -26,8 +33,6 @@ const player = createAudioPlayer();
 let queue = [];
 let currentSongIndex = 0;
 let resource = null;
-// DÜZELTME 1: isSkipping bayrağı eklendi — Idle eventi skip/stop sonrası
-// yanlışlıkla bir sonraki şarkıya geçmesin diye.
 let isSkipping = false;
 
 // --------------- ŞARKILAR -----------------
@@ -50,10 +55,6 @@ queue = [
 ];
 
 // --------------- SES OLAYI -----------------
-// DÜZELTME 2: Bağlantı yönetimi playSong dışına alındı.
-// getVoiceConnection ile mevcut bağlantı kontrol ediliyor,
-// yoksa yeni bağlantı kuruluyor. Her Idle'da bağlantı yeniden
-// kurulmaya çalışılmıyacak.
 function getOrJoinChannel(voiceChannel) {
   const existing = getVoiceConnection(voiceChannel.guild.id);
   if (existing) return existing;
@@ -80,9 +81,6 @@ function playSong(voiceChannel) {
   resource = createAudioResource(song.url, { inlineVolume: true });
   resource.volume.setVolume(0.5);
 
-  // DÜZELTME 3: player.once yerine player.on kullanılıyor ve
-  // isSkipping bayrağıyla çift-atlama engelleniyor.
-  // Ayrıca listener birikmesini önlemek için removeAllListeners kullanıldı.
   player.removeAllListeners(AudioPlayerStatus.Idle);
   player.once(AudioPlayerStatus.Idle, () => {
     if (isSkipping) {
@@ -109,7 +107,6 @@ client.on('messageCreate', async (message) => {
     return message.reply('Bir ses kanalında olmalısın!');
   }
 
-  // ---------------- COMMANDS -----------------
   if (command === '!play') {
     currentSongIndex = 0;
     isSkipping = false;
@@ -126,9 +123,6 @@ client.on('messageCreate', async (message) => {
     }
   }
 
-  // DÜZELTME 4: !resume artık player.unpause() kullanıyor.
-  // createAudioResource'ta startTime diye bir seçenek yok,
-  // eski kod resume'yi tamamen kırıyordu.
   else if (command === '!resume') {
     if (player.state.status === AudioPlayerStatus.Paused) {
       player.unpause();
@@ -139,20 +133,14 @@ client.on('messageCreate', async (message) => {
   }
 
   else if (command === '!stop') {
-    isSkipping = true; // Idle eventi tetiklenmesin
+    isSkipping = true;
     player.stop();
     currentSongIndex = 0;
-
-    // Bağlantıyı da kapat
     const connection = getVoiceConnection(message.guild.id);
     if (connection) connection.destroy();
-
     message.channel.send('⏹️ Radyo durduruldu ve başa alındı.');
   }
 
-  // DÜZELTME 5: !skip artık önce isSkipping=true yapıyor,
-  // Idle eventi yanlışlıkla bir kez daha atlamıyor.
-  // Mesaj da doğru (yeni) şarkı adıyla gönderiliyor.
   else if (command === '!skip') {
     isSkipping = true;
     player.stop();
@@ -169,10 +157,7 @@ client.on('messageCreate', async (message) => {
           : `${i + 1}. ${s.title}`
       )
       .join('\n');
-
-    // DÜZELTME 6: Discord embed 4096 karakter limitini aşmamak için kırpma
     if (desc.length > 4096) desc = desc.slice(0, 4093) + '...';
-
     const embed = new EmbedBuilder()
       .setTitle('🎶 Şarkı Listesi')
       .setDescription(desc)
