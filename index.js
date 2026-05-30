@@ -1,151 +1,64 @@
-const { Client, GatewayIntentBits, EmbedBuilder } = require('discord.js');
-const {
-  joinVoiceChannel,
-  createAudioPlayer,
-  createAudioResource,
-  AudioPlayerStatus,
-  VoiceConnectionStatus,
-  getVoiceConnection,
-  entersState,
-} = require('@discordjs/voice');
-
-require('dotenv').config();
+const { Client, GatewayIntentBits } = require('discord.js');
+const { joinVoiceChannel, createAudioPlayer, createAudioResource, AudioPlayerStatus, StreamType } = require('@discordjs/voice');
 
 const client = new Client({
-  intents: [
-    GatewayIntentBits.Guilds,
-    GatewayIntentBits.GuildVoiceStates,
-    GatewayIntentBits.GuildMessages,
-    GatewayIntentBits.MessageContent,
-  ],
+  intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildVoiceStates, GatewayIntentBits.GuildMessages, GatewayIntentBits.MessageContent]
 });
 
-const player = createAudioPlayer();
-
-let queue = [
-  {
-    title: "Doki Doki Literature Club!",
-    url: "https://nu.vgmtreasurechest.com/soundtracks/doki-doki-literature-club-official-soundtrack/izzackus/1-01.%20Doki%20Doki%20Literature%20Club%21.mp3",
-  },
-  {
-    title: "Ohayou Sayori!",
-    url: "https://nu.vgmtreasurechest.com/soundtracks/doki-doki-literature-club-official-soundtrack/fyaipyad/1-02.%20Ohayou%20Sayori%21.mp3",
-  },
-  {
-    title: "Dreams of Love and Literature",
-    url: "https://nu.vgmtreasurechest.com/soundtracks/doki-doki-literature-club-official-soundtrack/sbdpmsbc/1-03.%20Dreams%20of%20Love%20and%20Literature.mp3",
-  },
+const PLAYLIST = [
+  'https://nu.vgmtreasurechest.com/soundtracks/doki-doki-literature-club-official-soundtrack/izzackus/1-01.%20Doki%20Doki%20Literature%20Club%21.mp3',
+  'https://nu.vgmtreasurechest.com/soundtracks/doki-doki-literature-club-official-soundtrack/fyaipyad/1-02.%20Ohayou%20Sayori%21.mp3',
+  'https://nu.vgmtreasurechest.com/soundtracks/doki-doki-literature-club-official-soundtrack/sbdpmsbc/1-03.%20Dreams%20of%20Love%20and%20Literature.mp3'
 ];
 
-let currentSongIndex = 0;
-let activeChannel = null;
+let connection = null;
+let player = null;
+let trackIndex = 0;
 
-async function connect(channel) {
-  let connection = getVoiceConnection(channel.guild.id);
-
-  if (connection && connection.state.status === VoiceConnectionStatus.Ready) {
-    return connection;
-  }
-
-  connection = joinVoiceChannel({
-    channelId: channel.id,
-    guildId: channel.guild.id,
-    adapterCreator: channel.guild.voiceAdapterCreator,
-  });
-
-  connection.subscribe(player);
-
-  await entersState(connection, VoiceConnectionStatus.Ready, 15_000);
-
-  return connection;
-}
-
-async function playSong(channel) {
-  const song = queue[currentSongIndex];
-
-  console.log("▶ Playing:", song.title);
-
-  await connect(channel);
-
-  const resource = createAudioResource(song.url); // 🔥 FIX: StreamType kaldırıldı
-
-  player.stop(true); // 🔥 FIX: overlap bug
-
-  setTimeout(() => {
+function playTrack() {
+  try {
+    const resource = createAudioResource(PLAYLIST[trackIndex], { inputType: StreamType.Arbitrary });
     player.play(resource);
-  }, 200);
-
-  activeChannel = channel;
-}
-
-// 🔥 FIX: Idle yerine stateChange kullanıyoruz
-player.on('stateChange', (oldState, newState) => {
-  if (
-    oldState.status === AudioPlayerStatus.Playing &&
-    newState.status === AudioPlayerStatus.Idle
-  ) {
-    console.log("🎵 Song finished");
-
-    currentSongIndex = (currentSongIndex + 1) % queue.length;
-
-    if (activeChannel) {
-      playSong(activeChannel);
-    }
+    trackIndex = (trackIndex + 1) % PLAYLIST.length;
+  } catch (e) {
+    console.error('Playback error:', e);
   }
-});
+}
 
 client.on('messageCreate', async (message) => {
-  if (!message.guild || message.author.bot) return;
+  if (message.author.bot) return;
+  const content = message.content.trim().toLowerCase();
 
-  const args = message.content.trim().split(/ +/);
-  const command = args.shift().toLowerCase();
+  if (content === '!radio start') {
+    const member = message.member;
+    if (!member?.voice?.channel) return message.reply('Join a voice channel first!');
 
-  const voiceChannel = message.member.voice.channel;
+    if (connection) connection.destroy();
 
-  if (['!play', '!skip', '!stop'].includes(command) && !voiceChannel) {
-    return message.reply('Bir ses kanalında olmalısın!');
+    connection = joinVoiceChannel({
+      channelId: member.voice.channel.id,
+      guildId: message.guild.id,
+      adapterCreator: message.guild.voiceAdapterCreator
+    });
+
+    player = createAudioPlayer();
+    connection.subscribe(player);
+
+    trackIndex = 0;
+    playTrack();
+
+    player.on(AudioPlayerStatus.Idle, () => playTrack());
+    player.on('error', (e) => console.error('Player error:', e));
+
+    message.reply('📻 Radio started!');
   }
 
-  if (command === '!play') {
-    currentSongIndex = 0;
-    await playSong(voiceChannel);
-    message.channel.send(`🎵 Çalıyor: **${queue[currentSongIndex].title}**`);
-  }
-
-  if (command === '!skip') {
-    currentSongIndex = (currentSongIndex + 1) % queue.length;
-    await playSong(voiceChannel);
-    message.channel.send(`⏭️ Skip → **${queue[currentSongIndex].title}**`);
-  }
-
-  if (command === '!stop') {
-    player.stop();
-    const conn = getVoiceConnection(message.guild.id);
-    if (conn) conn.destroy();
-
-    activeChannel = null;
-
-    message.channel.send('⏹️ Durduruldu');
-  }
-
-  if (command === '!queue') {
-    const list = queue
-      .map((s, i) =>
-        i === currentSongIndex ? `▶ ${s.title}` : `${i + 1}. ${s.title}`
-      )
-      .join('\n');
-
-    const embed = new EmbedBuilder()
-      .setTitle('🎶 Queue')
-      .setDescription(list)
-      .setColor('#CCEBFF');
-
-    message.channel.send({ embeds: [embed] });
+  if (content === '!radio stop') {
+    if (player) { player.stop(); player = null; }
+    if (connection) { connection.destroy(); connection = null; }
+    message.reply('⏹️ Radio stopped.');
   }
 });
 
-client.once('clientReady', () => {
-  console.log(`Bot ready: ${client.user.tag}`);
-});
-
+client.once('ready', () => console.log(`Logged in as ${client.user.tag}`));
 client.login(process.env.TOKEN);
