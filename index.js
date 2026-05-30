@@ -1,5 +1,6 @@
 const { Client, GatewayIntentBits } = require('discord.js');
 const { joinVoiceChannel, createAudioPlayer, createAudioResource, AudioPlayerStatus, StreamType } = require('@discordjs/voice');
+const { spawn } = require('child_process');
 
 const client = new Client({
   intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildVoiceStates, GatewayIntentBits.GuildMessages, GatewayIntentBits.MessageContent]
@@ -14,12 +15,30 @@ const PLAYLIST = [
 let connection = null;
 let player = null;
 let trackIndex = 0;
+let active = false;
 
 function playTrack() {
+  if (!active || !player) return;
   try {
-    const resource = createAudioResource(PLAYLIST[trackIndex], { inputType: StreamType.Arbitrary });
-    player.play(resource);
+    const url = PLAYLIST[trackIndex];
     trackIndex = (trackIndex + 1) % PLAYLIST.length;
+
+    const ffmpeg = spawn('ffmpeg', [
+      '-reconnect', '1',
+      '-reconnect_streamed', '1',
+      '-reconnect_delay_max', '5',
+      '-i', url,
+      '-f', 's16le',
+      '-ar', '48000',
+      '-ac', '2',
+      'pipe:1'
+    ], { stdio: ['ignore', 'pipe', 'ignore'] });
+
+    const resource = createAudioResource(ffmpeg.stdout, {
+      inputType: StreamType.Raw
+    });
+
+    player.play(resource);
   } catch (e) {
     console.error('Playback error:', e);
   }
@@ -44,16 +63,24 @@ client.on('messageCreate', async (message) => {
     player = createAudioPlayer();
     connection.subscribe(player);
 
+    active = true;
     trackIndex = 0;
     playTrack();
 
-    player.on(AudioPlayerStatus.Idle, () => playTrack());
-    player.on('error', (e) => console.error('Player error:', e));
+    player.on(AudioPlayerStatus.Idle, () => {
+      if (active) playTrack();
+    });
+
+    player.on('error', (e) => {
+      console.error('Player error:', e);
+      if (active) playTrack();
+    });
 
     message.reply('📻 Radio started!');
   }
 
   if (content === '!radio stop') {
+    active = false;
     if (player) { player.stop(); player = null; }
     if (connection) { connection.destroy(); connection = null; }
     message.reply('⏹️ Radio stopped.');
